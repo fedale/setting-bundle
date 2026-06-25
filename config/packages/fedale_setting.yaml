@@ -1,0 +1,15 @@
+# Esempio di configurazione per l'app che installa il bundle.
+# Copiare in config/packages/fedale_setting.yaml del progetto.
+fedale_setting:
+
+  cache:
+    enabled: true
+    # id del pool PSR-6 usato per memorizzare i settings per-tenant
+    pool: cache.app
+    # secondi di validita; null = nessuna scadenza (invalidata automaticamente
+    # a ogni set() sul tenant interessato)
+    ttl: null
+
+  # 'doctrine' (built-in) oppure l'id di un servizio custom che implementa
+  # Fedale\SettingBundle\Contract\SettingStorageInterface (API, file, Mongo, ...).
+  provider: doctrine
