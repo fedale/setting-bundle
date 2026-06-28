@@ -6,8 +6,10 @@ use Fedale\SettingBundle\Bridge\Doctrine\Repository\SettingRepository;
 use Fedale\SettingBundle\Bridge\Twig\SettingsExtension;
 use Fedale\SettingBundle\Contract\SettingsManagerInterface;
 use Fedale\SettingBundle\Contract\SettingStorageInterface;
+use Fedale\SettingBundle\Contract\SettingValidatorInterface;
 use Fedale\SettingBundle\Contract\TenantProviderInterface;
 use Fedale\SettingBundle\Manager\SettingsManager;
+use Fedale\SettingBundle\Setting\Validation\ConstraintsSettingValidator;
 use Symfony\Component\Cache\Adapter\ArrayAdapter;
 use Symfony\Component\Config\Definition\Configurator\DefinitionConfigurator;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
@@ -36,6 +38,16 @@ final class FedaleSettingBundle extends AbstractBundle
                 // custom che implementa SettingStorageInterface (API, file, ...).
                 ->scalarNode('provider')
                     ->defaultValue('doctrine')
+                ->end()
+                // Validazione opt-in dei valori per-key. Disabilitata = free-form.
+                ->arrayNode('validation')
+                    ->addDefaultsIfNotSet()
+                    ->children()
+                        ->booleanNode('enabled')->defaultFalse()->end()
+                        // id del servizio che implementa
+                        // SettingConstraintsProviderInterface (le regole per key).
+                        ->scalarNode('constraints_provider')->defaultNull()->end()
+                    ->end()
                 ->end()
             ->end();
     }
@@ -118,6 +130,31 @@ final class FedaleSettingBundle extends AbstractBundle
             $container->services()->set($poolId, ArrayAdapter::class);
         }
 
+        // Validazione opt-in: se abilitata, l'alias del validatore punta al
+        // ConstraintsSettingValidator wired col Validator di Symfony e col
+        // provider di regole indicato dal consumer; altrimenti resta il no-op.
+        if ($config['validation']['enabled']) {
+            $providerId = $config['validation']['constraints_provider'];
+
+            if (null === $providerId) {
+                throw new \InvalidArgumentException(
+                    'fedale_setting.validation.constraints_provider must be set'
+                    . ' (service id implementing SettingConstraintsProviderInterface)'
+                    . ' when validation is enabled.'
+                );
+            }
+
+            $container->services()
+                ->set(ConstraintsSettingValidator::class)
+                ->args([
+                    service('validator'),
+                    service($providerId),
+                ]);
+
+            $container->services()
+                ->alias(SettingValidatorInterface::class, ConstraintsSettingValidator::class);
+        }
+
         $container->services()
             ->set(SettingsManager::class)
             ->args([
@@ -125,6 +162,7 @@ final class FedaleSettingBundle extends AbstractBundle
                 service(TenantProviderInterface::class),
                 service($poolId),
                 $config['cache']['ttl'],
+                service(SettingValidatorInterface::class),
             ]);
 
         $container->services()

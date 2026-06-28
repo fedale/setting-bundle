@@ -8,6 +8,7 @@ runtime — not Symfony parameters compiled into the container.
 - Abstract storage (`SettingStorageInterface`): a Doctrine ORM bridge is included,
   but it can be swapped (API, file, Mongo, ...).
 - Free-form keys: no closed set, any string is a valid key.
+- Optional per-key value validation, opt-in and enforced on every write.
 
 ## Installation
 
@@ -34,6 +35,9 @@ fedale_setting:
         pool: cache.app
         ttl: null        # seconds; null = no expiry
     provider: doctrine   # or the id of a custom SettingStorageInterface service
+    validation:
+        enabled: false   # opt-in per-key value validation (see "Validating values")
+        constraints_provider: null  # service id implementing SettingConstraintsProviderInterface
 ```
 
 ## Database schema
@@ -174,6 +178,108 @@ To use a source other than Doctrine, implement
 `Fedale\SettingBundle\Contract\SettingStorageInterface` and point
 `fedale_setting.provider` at the service id. Caching and the per-tenant fallback are
 still handled by the bundle.
+
+## Validating values
+
+By default keys are **free-form**: any value is accepted. You can opt specific
+keys into validation, enforced at the single write choke point
+(`SettingsManager::set()`), so the rules hold no matter where the write comes from
+— a form, a CLI command or plain code. Keys without declared rules stay free-form.
+
+Validation builds on `symfony/validator` (install it: `composer require
+symfony/validator`). Declare the per-key constraints by registering a service that
+implements `SettingConstraintsProviderInterface`; the bundle ships
+`ArrayConstraintsProvider` for the common static-map case:
+
+```php
+// config/services.php
+use Fedale\SettingBundle\Contract\SettingConstraintsProviderInterface;
+use Fedale\SettingBundle\Setting\Validation\ArrayConstraintsProvider;
+use Symfony\Component\Validator\Constraints as Assert;
+
+return static function (ContainerConfigurator $container): void {
+    $container->services()
+        ->set('app.setting_constraints', ArrayConstraintsProvider::class)
+        ->args([[
+            'myKey'         => [new Assert\Length(min: 3, max: 10)],
+            'general.title' => [new Assert\NotBlank()],
+            'general.email' => [new Assert\Email()],
+        ]]);
+
+    $container->services()
+        ->alias(SettingConstraintsProviderInterface::class, 'app.setting_constraints');
+};
+```
+
+Then enable validation, pointing it at the provider:
+
+```yaml
+# config/packages/fedale_setting.yaml
+fedale_setting:
+    validation:
+        enabled: true
+        constraints_provider: app.setting_constraints
+```
+
+Now a write that breaks a rule throws `SettingValidationException` instead of
+persisting:
+
+```php
+try {
+    $this->settings->set('myKey', 'ab'); // shorter than 3
+} catch (\Fedale\SettingBundle\Exception\SettingValidationException $e) {
+    $e->getKey();                // 'myKey'
+    $e->getViolationMessages();  // ['This value is too short. It should have 3 characters or more.']
+}
+```
+
+For dynamic rules (e.g. constraints stored in the database or computed per key),
+implement `SettingConstraintsProviderInterface` directly instead of using
+`ArrayConstraintsProvider`. Return `[]` for any key that must stay free-form:
+
+```php
+// src/Setting/AppSettingConstraintsProvider.php
+use Fedale\SettingBundle\Contract\SettingConstraintsProviderInterface;
+use Symfony\Component\Validator\Constraint;
+use Symfony\Component\Validator\Constraints as Assert;
+
+final class AppSettingConstraintsProvider implements SettingConstraintsProviderInterface
+{
+    /**
+     * @return list<Constraint>
+     */
+    public function constraintsFor(string $key): array
+    {
+        return match (true) {
+            // every key under "limits." must be a positive integer
+            str_starts_with($key, 'limits.') => [new Assert\Positive()],
+            'myKey' === $key                 => [new Assert\Length(min: 3, max: 10)],
+            default                          => [], // free-form
+        };
+    }
+}
+```
+
+With autowiring, just point `constraints_provider` at the class id:
+
+```yaml
+fedale_setting:
+    validation:
+        enabled: true
+        constraints_provider: App\Setting\AppSettingConstraintsProvider
+```
+
+### How the validation flow fits together
+
+1. `SettingsManagerInterface::set($key, $value, ...)` is called (form, CLI or code).
+2. Before persisting, the manager calls the configured `SettingValidatorInterface`.
+3. With validation enabled, `ConstraintsSettingValidator` asks your provider for
+   the constraints of `$key`. No constraints → the value is accepted (free-form).
+4. Otherwise the value is checked with `symfony/validator`; on failure a
+   `SettingValidationException` is thrown and **nothing is written**.
+
+This means the rules are enforced once, at the single write choke point, so you
+cannot bypass them by writing from a different entry point.
 
 ## Cache
 

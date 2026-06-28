@@ -5,9 +5,12 @@ namespace Fedale\SettingBundle\Tests\DependencyInjection;
 use Fedale\SettingBundle\Bridge\Doctrine\Repository\SettingRepository;
 use Fedale\SettingBundle\Contract\SettingsManagerInterface;
 use Fedale\SettingBundle\Contract\SettingStorageInterface;
+use Fedale\SettingBundle\Contract\SettingValidatorInterface;
 use Fedale\SettingBundle\Contract\TenantProviderInterface;
 use Fedale\SettingBundle\FedaleSettingBundle;
 use Fedale\SettingBundle\Manager\SettingsManager;
+use Fedale\SettingBundle\Setting\Validation\ConstraintsSettingValidator;
+use Fedale\SettingBundle\Setting\Validation\NullSettingValidator;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
@@ -46,6 +49,44 @@ final class BundleExtensionTest extends TestCase
         self::assertSame(TenantProviderInterface::class, (string) $args[1]);
         self::assertSame('cache.app', (string) $args[2], 'pool di default');
         self::assertNull($args[3], 'ttl di default');
+        self::assertSame(SettingValidatorInterface::class, (string) $args[4]);
+    }
+
+    public function testValidatorDefaultsToNoOp(): void
+    {
+        $container = $this->load([]);
+
+        self::assertSame(
+            NullSettingValidator::class,
+            (string) $container->getAlias(SettingValidatorInterface::class),
+        );
+        self::assertFalse($container->hasDefinition(ConstraintsSettingValidator::class));
+    }
+
+    public function testValidationEnabledWiresConstraintsValidator(): void
+    {
+        $container = $this->load([
+            'validation' => [
+                'enabled' => true,
+                'constraints_provider' => 'app.my_constraints',
+            ],
+        ]);
+
+        self::assertSame(
+            ConstraintsSettingValidator::class,
+            (string) $container->getAlias(SettingValidatorInterface::class),
+        );
+
+        $args = $container->getDefinition(ConstraintsSettingValidator::class)->getArguments();
+        self::assertSame('validator', (string) $args[0]);
+        self::assertSame('app.my_constraints', (string) $args[1]);
+    }
+
+    public function testValidationEnabledWithoutProviderThrows(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+
+        $this->load(['validation' => ['enabled' => true]]);
     }
 
     public function testCachePoolAndTtlAreConfigurable(): void

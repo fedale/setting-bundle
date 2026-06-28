@@ -33,11 +33,13 @@
         "doctrine/orm": "^2.14 || ^3.0",
         "phpunit/phpunit": "^11.0",
         "symfony/cache": "^6.4 || ^7.0",
+        "symfony/validator": "^6.4 || ^7.0",
         "twig/twig": "^3.0"
     },
     "suggest": {
         "doctrine/orm": "Necessario quando 'provider: doctrine' (storage di default dei settings)",
         "doctrine/doctrine-bundle": "Necessario quando 'provider: doctrine'",
+        "symfony/validator": "Abilita la validazione opt-in dei valori per-key (validation.enabled)",
         "twig/twig": "Abilita la funzione Twig setting() per leggere i settings nei template"
     },
     "extra": {

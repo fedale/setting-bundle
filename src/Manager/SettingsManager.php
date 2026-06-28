@@ -4,7 +4,9 @@ namespace Fedale\SettingBundle\Manager;
 
 use Fedale\SettingBundle\Contract\SettingsManagerInterface;
 use Fedale\SettingBundle\Contract\SettingStorageInterface;
+use Fedale\SettingBundle\Contract\SettingValidatorInterface;
 use Fedale\SettingBundle\Contract\TenantProviderInterface;
+use Fedale\SettingBundle\Setting\Validation\NullSettingValidator;
 use Psr\Cache\CacheItemPoolInterface;
 
 /**
@@ -28,12 +30,17 @@ final class SettingsManager implements SettingsManagerInterface
      */
     private array $runtime = [];
 
+    private readonly SettingValidatorInterface $validator;
+
     public function __construct(
         private readonly SettingStorageInterface $storage,
         private readonly TenantProviderInterface $tenantProvider,
         private readonly CacheItemPoolInterface $cache,
         private readonly ?int $ttl = null,
+        ?SettingValidatorInterface $validator = null,
     ) {
+        // Free-form by default: no rules unless a validator is injected.
+        $this->validator = $validator ?? new NullSettingValidator();
     }
 
     public function get(
@@ -57,6 +64,9 @@ final class SettingsManager implements SettingsManagerInterface
         string $type = 'string',
     ): void {
         $tenantId ??= $this->tenantProvider->getCurrentTenantId();
+
+        // Enforce per-key rules before persisting; throws on violation.
+        $this->validator->validate($key, $value, $type);
 
         $this->storage->upsert($tenantId, $key, $value, $type, true);
 

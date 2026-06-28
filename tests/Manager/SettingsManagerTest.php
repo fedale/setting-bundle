@@ -2,6 +2,8 @@
 
 namespace Fedale\SettingBundle\Tests\Manager;
 
+use Fedale\SettingBundle\Contract\SettingValidatorInterface;
+use Fedale\SettingBundle\Exception\SettingValidationException;
 use Fedale\SettingBundle\Manager\SettingsManager;
 use Fedale\SettingBundle\Tests\Fixtures\FixedTenantProvider;
 use Fedale\SettingBundle\Tests\Fixtures\InMemorySettingStorage;
@@ -111,6 +113,34 @@ final class SettingsManagerTest extends TestCase
 
         // il tenant 12 vede il nuovo default senza override proprio
         self::assertSame('dark', $manager->get('general.theme', null, 12));
+    }
+
+    public function testSetRejectsInvalidValueAndDoesNotPersist(): void
+    {
+        $storage = new InMemorySettingStorage([12 => ['k' => 'old']]);
+        $validator = new class implements SettingValidatorInterface {
+            public function validate(string $key, mixed $value, string $type): void
+            {
+                throw new SettingValidationException($key, ['too short']);
+            }
+        };
+
+        $manager = new SettingsManager(
+            $storage,
+            new FixedTenantProvider(12),
+            new ArrayAdapter(),
+            null,
+            $validator,
+        );
+
+        $this->expectException(SettingValidationException::class);
+
+        try {
+            $manager->set('k', 'ab');
+        } finally {
+            // Value untouched: validation runs before storage->upsert().
+            self::assertSame('old', $storage->loadTenant(12)['k']);
+        }
     }
 
     public function testNativeTypeIsPreservedThroughGet(): void
