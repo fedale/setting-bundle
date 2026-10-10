@@ -3,12 +3,19 @@
 namespace Fedale\SettingBundle\Tests\DependencyInjection;
 
 use Fedale\SettingBundle\Bridge\Doctrine\Repository\SettingRepository;
+use Fedale\SettingBundle\Bridge\Doctrine\Scoped\Repository\ScopedSettingRepository;
 use Fedale\SettingBundle\Contract\SettingsManagerInterface;
 use Fedale\SettingBundle\Contract\SettingStorageInterface;
 use Fedale\SettingBundle\Contract\SettingValidatorInterface;
 use Fedale\SettingBundle\Contract\TenantProviderInterface;
 use Fedale\SettingBundle\FedaleSettingBundle;
 use Fedale\SettingBundle\Manager\SettingsManager;
+use Fedale\SettingBundle\Scoped\ScopedSettingsResolver;
+use Fedale\SettingBundle\Scoped\ScopedSettingsWriter;
+use Fedale\SettingBundle\Scoped\SettingDefinitionInterface;
+use Fedale\SettingBundle\Scoped\Store\CachingScopedStore;
+use Fedale\SettingBundle\Scoped\Store\NullScopedStore;
+use Fedale\SettingBundle\Scoped\Store\ScopedStoreInterface;
 use Fedale\SettingBundle\Setting\Validation\ConstraintsSettingValidator;
 use Fedale\SettingBundle\Setting\Validation\NullSettingValidator;
 use PHPUnit\Framework\Attributes\CoversClass;
@@ -126,6 +133,87 @@ final class BundleExtensionTest extends TestCase
         self::assertFalse(
             $container->hasDefinition(\Fedale\SettingBundle\Bridge\Twig\SettingsExtension::class),
             'senza TwigBundle la extension non deve essere registrata',
+        );
+    }
+
+    public function testScopedSettingsAreOffByDefault(): void
+    {
+        $container = $this->load([]);
+
+        self::assertSame(NullScopedStore::class, (string) $container->getAlias(ScopedStoreInterface::class));
+        self::assertTrue($container->hasDefinition(ScopedSettingsResolver::class));
+        self::assertTrue($container->hasDefinition(ScopedSettingsWriter::class));
+        self::assertFalse($container->hasDefinition(ScopedSettingRepository::class));
+        self::assertArrayHasKey(
+            SettingDefinitionInterface::class,
+            $container->getAutoconfiguredInstanceof(),
+            'definitions are tagged automatically',
+        );
+    }
+
+    public function testDoctrineScopedStoreIsCached(): void
+    {
+        $container = $this->load([
+            'scoped' => ['store' => 'doctrine'],
+            'cache' => ['pool' => 'app.my_pool', 'ttl' => 60],
+        ]);
+
+        self::assertSame(CachingScopedStore::class, (string) $container->getAlias(ScopedStoreInterface::class));
+
+        $args = $container->getDefinition(CachingScopedStore::class)->getArguments();
+        self::assertSame(ScopedSettingRepository::class, (string) $args[0]);
+        self::assertSame('app.my_pool', (string) $args[1]);
+        self::assertSame(60, $args[2]);
+    }
+
+    public function testCustomScopedStore(): void
+    {
+        $container = $this->load(['scoped' => ['store' => 'app.my_scoped_store']]);
+
+        $args = $container->getDefinition(CachingScopedStore::class)->getArguments();
+        self::assertSame('app.my_scoped_store', (string) $args[0]);
+        self::assertFalse($container->hasDefinition(ScopedSettingRepository::class));
+    }
+
+    /**
+     * @return array<string, mixed> the ORM mappings prepended to the doctrine config
+     */
+    private function prependedMappings(array $config): array
+    {
+        $container = new ContainerBuilder();
+        $container->setParameter('kernel.environment', 'test');
+        $container->setParameter('kernel.build_dir', sys_get_temp_dir());
+        $container->registerExtension(new class extends \Symfony\Component\DependencyInjection\Extension\Extension {
+            public function load(array $configs, ContainerBuilder $container): void
+            {
+            }
+
+            public function getAlias(): string
+            {
+                return 'doctrine';
+            }
+        });
+        $container->prependExtensionConfig('fedale_setting', $config);
+
+        $extension = (new FedaleSettingBundle())->getContainerExtension();
+        $extension->prepend($container);
+
+        return array_merge(...array_map(
+            static fn (array $c): array => $c['orm']['mappings'] ?? [],
+            $container->getExtensionConfig('doctrine'),
+        ));
+    }
+
+    public function testScopedMappingIsRegisteredOnlyForTheDoctrineScopedStore(): void
+    {
+        self::assertSame(['FedaleSetting'], array_keys($this->prependedMappings([])));
+        self::assertSame(
+            ['FedaleSetting', 'FedaleSettingScoped'],
+            array_keys($this->prependedMappings(['scoped' => ['store' => 'doctrine']])),
+        );
+        self::assertSame(
+            ['FedaleSettingScoped'],
+            array_keys($this->prependedMappings(['provider' => 'app.my_storage', 'scoped' => ['store' => 'doctrine']])),
         );
     }
 

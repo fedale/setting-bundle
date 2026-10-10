@@ -24,9 +24,11 @@
     "require": {
         "php": "^8.2",
         "psr/cache": "^3.0",
+        "psr/log": "^1.1 || ^2.0 || ^3.0",
         "symfony/config": "^6.4 || ^7.0 || ^8.0",
         "symfony/dependency-injection": "^6.4 || ^7.0 || ^8.0",
-        "symfony/http-kernel": "^6.4 || ^7.0 || ^8.0"
+        "symfony/http-kernel": "^6.4 || ^7.0 || ^8.0",
+        "symfony/service-contracts": "^2.5 || ^3.0"
     },
     "require-dev": {
         "doctrine/doctrine-bundle": "^2.8 || ^3.0",
@@ -38,8 +40,8 @@
     },
     "suggest": {
         "doctrine/orm": "Necessario quando 'provider: doctrine' (storage di default dei settings)",
-        "doctrine/doctrine-bundle": "Necessario quando 'provider: doctrine'",
-        "symfony/validator": "Abilita la validazione opt-in dei valori per-key (validation.enabled)",
+        "doctrine/doctrine-bundle": "Necessario quando 'provider: doctrine' o 'scoped.store: doctrine'",
+        "symfony/validator": "Abilita la validazione opt-in dei valori per-key (validation.enabled) e i constraints() delle impostazioni con scope",
         "twig/twig": "Abilita la funzione Twig setting() per leggere i settings nei template"
     },
     "extra": {

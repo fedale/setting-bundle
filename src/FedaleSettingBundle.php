@@ -3,12 +3,20 @@
 namespace Fedale\SettingBundle;
 
 use Fedale\SettingBundle\Bridge\Doctrine\Repository\SettingRepository;
+use Fedale\SettingBundle\Bridge\Doctrine\Scoped\Repository\ScopedSettingRepository;
 use Fedale\SettingBundle\Bridge\Twig\SettingsExtension;
 use Fedale\SettingBundle\Contract\SettingsManagerInterface;
 use Fedale\SettingBundle\Contract\SettingStorageInterface;
 use Fedale\SettingBundle\Contract\SettingValidatorInterface;
 use Fedale\SettingBundle\Contract\TenantProviderInterface;
 use Fedale\SettingBundle\Manager\SettingsManager;
+use Fedale\SettingBundle\Scoped\ScopedSettingsResolver;
+use Fedale\SettingBundle\Scoped\ScopedSettingsWriter;
+use Fedale\SettingBundle\Scoped\SettingDefinitionInterface;
+use Fedale\SettingBundle\Scoped\SettingDefinitionRegistry;
+use Fedale\SettingBundle\Scoped\Store\CachingScopedStore;
+use Fedale\SettingBundle\Scoped\Store\NullScopedStore;
+use Fedale\SettingBundle\Scoped\Store\ScopedStoreInterface;
 use Fedale\SettingBundle\Setting\Validation\ConstraintsSettingValidator;
 use Symfony\Component\Cache\Adapter\ArrayAdapter;
 use Symfony\Component\Config\Definition\Configurator\DefinitionConfigurator;
@@ -17,9 +25,12 @@ use Symfony\Component\DependencyInjection\Loader\Configurator\ContainerConfigura
 use Symfony\Component\HttpKernel\Bundle\AbstractBundle;
 
 use function Symfony\Component\DependencyInjection\Loader\Configurator\service;
+use function Symfony\Component\DependencyInjection\Loader\Configurator\tagged_iterator;
 
 final class FedaleSettingBundle extends AbstractBundle
 {
+    public const DEFINITION_TAG = 'fedale_setting.definition';
+
     public function configure(DefinitionConfigurator $definition): void
     {
         $definition->rootNode()
@@ -49,6 +60,16 @@ final class FedaleSettingBundle extends AbstractBundle
                         ->scalarNode('constraints_provider')->defaultNull()->end()
                     ->end()
                 ->end()
+                // Scoped settings (declared definitions resolved along a scope
+                // chain). The store is null = feature off, 'doctrine' = the
+                // built-in setting_scoped table, or the id of a service
+                // implementing ScopedStoreInterface.
+                ->arrayNode('scoped')
+                    ->addDefaultsIfNotSet()
+                    ->children()
+                        ->scalarNode('store')->defaultNull()->end()
+                    ->end()
+                ->end()
             ->end();
     }
 
@@ -57,6 +78,10 @@ final class FedaleSettingBundle extends AbstractBundle
      * lo storage Doctrine, cosi l'app consumer non deve aggiungere una voce
      * doctrine.orm.mappings che punta dentro vendor/. Saltato se DoctrineBundle
      * non e' presente o se e' configurato uno storage custom.
+     *
+     * The ScopedSetting mapping is registered on its own, only when
+     * `scoped.store` is 'doctrine': apps without scoped settings get no extra
+     * table in their migrations.
      */
     public function prependExtension(
         ContainerConfigurator $container,
@@ -66,21 +91,35 @@ final class FedaleSettingBundle extends AbstractBundle
             return;
         }
 
-        if (!$this->isDoctrineProvider($builder)) {
+        $mappings = [];
+
+        if ($this->isDoctrineProvider($builder)) {
+            $mappings['FedaleSetting'] = [
+                'is_bundle' => false,
+                'type' => 'attribute',
+                'dir' => dirname(__DIR__) . '/src/Bridge/Doctrine/Entity',
+                'prefix' => 'Fedale\SettingBundle\Bridge\Doctrine\Entity',
+                'alias' => 'FedaleSetting',
+            ];
+        }
+
+        if ('doctrine' === $this->rawConfigValue($builder, 'scoped', 'store')) {
+            $mappings['FedaleSettingScoped'] = [
+                'is_bundle' => false,
+                'type' => 'attribute',
+                'dir' => dirname(__DIR__) . '/src/Bridge/Doctrine/Scoped/Entity',
+                'prefix' => 'Fedale\SettingBundle\Bridge\Doctrine\Scoped\Entity',
+                'alias' => 'FedaleSettingScoped',
+            ];
+        }
+
+        if ([] === $mappings) {
             return;
         }
 
         $container->extension('doctrine', [
             'orm' => [
-                'mappings' => [
-                    'FedaleSetting' => [
-                        'is_bundle' => false,
-                        'type' => 'attribute',
-                        'dir' => dirname(__DIR__) . '/src/Bridge/Doctrine/Entity',
-                        'prefix' => 'Fedale\SettingBundle\Bridge\Doctrine\Entity',
-                        'alias' => 'FedaleSetting',
-                    ],
-                ],
+                'mappings' => $mappings,
             ],
         ]);
     }
@@ -92,15 +131,27 @@ final class FedaleSettingBundle extends AbstractBundle
      */
     private function isDoctrineProvider(ContainerBuilder $builder): bool
     {
-        $provider = 'doctrine';
+        return 'doctrine' === ($this->rawConfigValue($builder, 'provider') ?? 'doctrine');
+    }
+
+    /**
+     * The last value set for a config path in the raw (unprocessed) config.
+     */
+    private function rawConfigValue(ContainerBuilder $builder, string ...$path): mixed
+    {
+        $value = null;
 
         foreach ($builder->getExtensionConfig('fedale_setting') as $config) {
-            if (isset($config['provider'])) {
-                $provider = $config['provider'];
+            foreach ($path as $segment) {
+                if (!\is_array($config) || !\array_key_exists($segment, $config)) {
+                    continue 2;
+                }
+                $config = $config[$segment];
             }
+            $value = $config;
         }
 
-        return 'doctrine' === $provider;
+        return $value;
     }
 
     public function loadExtension(
@@ -168,6 +219,8 @@ final class FedaleSettingBundle extends AbstractBundle
         $container->services()
             ->alias(SettingsManagerInterface::class, SettingsManager::class);
 
+        $this->loadScoped($config, $container, $builder, $poolId);
+
         // Funzione Twig `setting()`, solo se TwigBundle e' presente.
         if ($builder->hasExtension('twig')) {
             $container->services()
@@ -175,5 +228,67 @@ final class FedaleSettingBundle extends AbstractBundle
                 ->args([service(SettingsManagerInterface::class)])
                 ->tag('twig.extension');
         }
+    }
+
+    /**
+     * Scoped settings: the resolver and the writer are always registered, so a
+     * consumer can depend on them unconditionally and check isEnabled(); with no
+     * store configured they run on the NullScopedStore.
+     *
+     * @param array<string, mixed> $config
+     */
+    private function loadScoped(
+        array $config,
+        ContainerConfigurator $container,
+        ContainerBuilder $builder,
+        string $poolId,
+    ): void {
+        $services = $container->services();
+
+        $builder->registerForAutoconfiguration(SettingDefinitionInterface::class)
+            ->addTag(self::DEFINITION_TAG);
+
+        $services->set(SettingDefinitionRegistry::class)
+            ->args([tagged_iterator(self::DEFINITION_TAG)]);
+
+        $store = $config['scoped']['store'];
+
+        if (null === $store) {
+            $services->set(NullScopedStore::class);
+            $services->alias(ScopedStoreInterface::class, NullScopedStore::class);
+        } else {
+            if ('doctrine' === $store) {
+                $services->set(ScopedSettingRepository::class)
+                    ->args([service('doctrine')]);
+                $store = ScopedSettingRepository::class;
+            }
+
+            $services->set(CachingScopedStore::class)
+                ->args([
+                    service($store),
+                    service($poolId),
+                    $config['cache']['ttl'],
+                ]);
+            $services->alias(ScopedStoreInterface::class, CachingScopedStore::class);
+        }
+
+        $services->set(ScopedSettingsResolver::class)
+            ->args([
+                service(SettingDefinitionRegistry::class),
+                service(ScopedStoreInterface::class),
+                service(TenantProviderInterface::class),
+                service('logger')->nullOnInvalid(),
+            ])
+            ->tag('kernel.reset', ['method' => 'reset'])
+            ->tag('monolog.logger', ['channel' => 'fedale_setting']);
+
+        $services->set(ScopedSettingsWriter::class)
+            ->args([
+                service(SettingDefinitionRegistry::class),
+                service(ScopedStoreInterface::class),
+                service(TenantProviderInterface::class),
+                service(ScopedSettingsResolver::class),
+                service('validator')->nullOnInvalid(),
+            ]);
     }
 }
