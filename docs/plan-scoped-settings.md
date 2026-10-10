@@ -209,6 +209,9 @@ Implementations:
     an undeclared key is a programming error (`InvalidArgumentException`);
   - `values(string $namespace, Scope $scope, ?int $tenantId = null): array<string, mixed>`:
     the native values of one scope, without inheritance, to prefill a form.
+  - `inherited(string $namespace, ScopeChain $chain, mixed $context = null, ?int $tenantId = null): array<string, ResolvedValue>`:
+    the same lookup without the current tenant's step at the head of the chain,
+    i.e. what applies if that value is cleared. It is the "inherit" hint of a form.
 
   `ResolvedValue` holds `value` (native type), `scope` and `tenantId` of origin,
   so the UI can show "inherited from global (platform)".

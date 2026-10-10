@@ -91,6 +91,30 @@ class ScopedSettingsResolver implements ResetInterface
     }
 
     /**
+     * What each setting falls back to if the current tenant's value at the head
+     * of the chain is cleared: the same lookup without that single step. It is
+     * the "inherit" hint of the form editing that scope.
+     *
+     * @return array<string, ResolvedValue> key => resolved value
+     */
+    public function inherited(string $namespace, ScopeChain $chain, mixed $context = null, ?int $tenantId = null): array
+    {
+        $tenants = $this->tenantChain($tenantId);
+        $this->load($namespace, $chain, $tenants);
+
+        $skip = self::bagKey($namespace, $tenants[0], $chain->scopes[0]);
+
+        $inherited = [];
+        foreach ($this->definitions->all($namespace) as $key => $definition) {
+            if (null !== $value = $this->lookup($namespace, $definition, $chain, $tenants, $context, $skip)) {
+                $inherited[$key] = $value;
+            }
+        }
+
+        return $inherited;
+    }
+
+    /**
      * The values stored at exactly one scope of one tenant, without inheritance,
      * e.g. to prefill that scope's form. Values that no longer fit their
      * definition are left out.
@@ -120,7 +144,8 @@ class ScopedSettingsResolver implements ResetInterface
     }
 
     /**
-     * @param list<int> $tenants
+     * @param list<int>   $tenants
+     * @param string|null $skip    bag key of a (tenant, scope) step to leave out
      */
     private function lookup(
         string $namespace,
@@ -128,12 +153,14 @@ class ScopedSettingsResolver implements ResetInterface
         ScopeChain $chain,
         array $tenants,
         mixed $context,
+        ?string $skip = null,
     ): ?ResolvedValue {
         foreach ($tenants as $tenantId) {
             foreach ($chain->scopes as $scope) {
-                $raw = $this->bags[self::bagKey($namespace, $tenantId, $scope)][$definition->key()] ?? null;
+                $bagKey = self::bagKey($namespace, $tenantId, $scope);
+                $raw = $this->bags[$bagKey][$definition->key()] ?? null;
 
-                if (null === $raw) {
+                if (null === $raw || $bagKey === $skip) {
                     continue;
                 }
 

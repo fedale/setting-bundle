@@ -181,6 +181,25 @@ final class ScopedSettingsResolverTest extends TestCase
         self::assertSame(['renderer' => 'list'], $resolver->values('test.ui', new Scope('grid', 'users'), 0));
     }
 
+    public function testInheritedSkipsOnlyTheEditedStep(): void
+    {
+        $resolver = $this->resolver(new InMemoryScopedStore(self::RENDERER_ROWS), 5);
+
+        // Tenant 5 editing its global scope: without C, the platform global (A) applies.
+        $global = $resolver->inherited('test.ui', ScopeChain::of(Scope::global()));
+        self::assertSame('table', $global['renderer']->value);
+        self::assertSame(0, $global['renderer']->tenantId);
+
+        // Tenant 5 editing the users grid: it has no own value there, so the
+        // hint is its effective value, its own global (C).
+        $users = $resolver->inherited('test.ui', $this->gridChain('users'));
+        self::assertSame('cards', $users['renderer']->value);
+        self::assertSame(5, $users['renderer']->tenantId);
+
+        // Tenant 0 editing its global scope: nothing below it.
+        self::assertSame([], $resolver->inherited('test.ui', ScopeChain::of(Scope::global()), null, 0));
+    }
+
     public function testUnknownSettingIsAProgrammingError(): void
     {
         $this->expectException(\InvalidArgumentException::class);

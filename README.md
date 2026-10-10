@@ -417,6 +417,10 @@ $resolver->get('gridview.ui', 'page_size', $chain)?->value;
 
 // The values stored at exactly one scope, without inheritance (e.g. to fill a form)
 $resolver->values('gridview.ui', new Scope('grid', 'users'));
+
+// What each setting falls back to if the head of the chain is cleared for the
+// current tenant: the "inherit" hint of the form editing that scope
+$resolver->inherited('gridview.ui', $chain, $gridOptions);
 ```
 
 A candidate is skipped, and the lookup moves on, when:
